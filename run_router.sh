@@ -2,14 +2,14 @@
 set -e
 
 if [ $# -eq 0 ]; then
-  echo "Usage: ./run_router <network_name1> [ <network_name2> ... ]" 2>&1
+  echo "Usage: ./run_router.sh <network_name1> [ <network_name2> ... ]" 2>&1
 fi
 
 DOCKERFILE_DIR=router
 IMAGE_NAME=netsim_router
 NAT_SUBNET_NAME=$1; shift
 NAT_SUBNET=$(docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}' $NAT_SUBNET_NAME)
-IPTABLES_BIN=iptables-legacy
+# IPTABLES: Set to override the build-time IPTABLES env var
 
 # Build the image if not exist
 if ! docker image inspect -f '{{ .Name }}' $IMAGE_NAME >/dev/null 2>&1; then
@@ -18,7 +18,17 @@ if ! docker image inspect -f '{{ .Name }}' $IMAGE_NAME >/dev/null 2>&1; then
 fi
 
 # Create a container
-cont_id=$(docker create --rm --network=$NAT_SUBNET_NAME --cap-add=NET_ADMIN $IMAGE_NAME)
+cont_envs=(-e NAT_SUBNET=$NAT_SUBNET)
+if [ $IPTABLES ]; then
+  cont_envs+=(-e IPTABLES=$IPTABLES)
+fi
+
+cont_id=$(
+  docker create --rm --cap-add=NET_ADMIN \
+  --network=$NAT_SUBNET_NAME \
+  "${cont_envs[@]}" \
+  $IMAGE_NAME
+)
 
 
 # Connect remaining networks
@@ -28,37 +38,24 @@ done
 
 
 docker start $cont_id &>/dev/null
-ip_addr=$(docker container inspect -f "{{.NetworkSettings.Networks.${NAT_SUBNET_NAME}.IPAddress}}" $cont_id)
+ipaddr_natside=$(docker container inspect -f "{{.NetworkSettings.Networks.${NAT_SUBNET_NAME}.IPAddress}}" $cont_id)
 
 
 echo 'Container ID'
 echo -e "\t$cont_id"
 echo "IP Address ($NAT_SUBNET_NAME)"
-echo -e "\t$ip_addr"
+echo -e "\t$ipaddr_natside"
 
 for subnet_name in "$@"; do
-  _ip_address=$(docker container inspect -f "{{.NetworkSettings.Networks.$subnet_name.IPAddress}}" $cont_id)
+  ipaddr=$(docker container inspect -f "{{.NetworkSettings.Networks.$subnet_name.IPAddress}}" $cont_id)
 
   echo "IP Address ($subnet_name)"
-  echo -e "\t$_ip_address"
+  echo -e "\t$ipaddr"
 done
+echo
 
-
-# IP Address that belongs to NATed subnet
-echo 'Configuring iptables for SNAT and logging...'
-for subnet_name in "$@"; do
-  _ip_address=$(docker container inspect -f "{{.NetworkSettings.Networks.$subnet_name.IPAddress}}" $cont_id)
-  _mac_address=$(docker container inspect -f "{{.NetworkSettings.Networks.$subnet_name.MacAddress}}" $cont_id)
-  _ifname=$(docker exec $cont_id ip -br link | awk '$3 ~ /'$_mac_address'/ {print $1}')
-
-  docker exec $cont_id $IPTABLES_BIN -t nat -A POSTROUTING -s $NAT_SUBNET -o ${_ifname%@*} \
-    -j SNAT --to-source $_ip_address
-
-  docker exec $cont_id $IPTABLES_BIN -t nat -A POSTROUTING -s $NAT_SUBNET -o ${_ifname%@*} \
-    -j NFLOG --nflog-prefix "[POSTROUTING]:" --nflog-group 1
-done
-
-docker exec $cont_id $IPTABLES_BIN -A FORWARD -s $NAT_SUBNET -d 0/0 -j NFLOG --nflog-prefix "[ From NATed]:" --nflog-group 1
-docker exec $cont_id $IPTABLES_BIN -A FORWARD -s 0/0 -d $NAT_SUBNET -j NFLOG --nflog-prefix "[   To NATed]:" --nflog-group 1
+echo 'Configuring iptables...'
+router/get_subnets.sh $cont_id "$@" | docker exec -i $cont_id /bin/bash -c 'cat >/subnets.txt'
+docker exec -w /scripts $cont_id ./ipt_setup.sh /subnets.txt
 
 # docker exec -it $cont_id /bin/bash
