@@ -1,11 +1,12 @@
-## What is this?
-A set of scripts for simple NAT simuation , especially for checking default NAT translation behavior in Linux
-
-The desired result is: [endpoint independent](https://tools.ietf.org/html/rfc4787#section-4.1). (And it really is)
+## Description
+A simple NAT simulation using Docker
 
 
-## How-to
-Create two networks, one of which is for NATted network:
+## Example
+
+![example diagram](docs/example.png)
+
+Create two docker networks, one of which is for NATted network:
 ```
 docker network create NATd
 docker network create AA
@@ -16,7 +17,7 @@ Run a router with network names. The first must be of NATted network
 ./run_router.sh NATd AA
 # Prints:
 # 	Container ID (say, "RRR")
-# 	IP Addresses (say, "1.1.1.2", "2.2.2.2", ...)
+# 	IP Addresses (say, "172.18.0.2", "172.19.0.2", ...)
 ```
 
 Run a NATted host
@@ -24,7 +25,7 @@ Run a NATted host
 ./run_host.sh NATd RRR
 # Prints:
 # 	Container ID (say, "NNN")
-# 	IP Address   (say, "1.1.1.3")
+# 	IP Address   (say, "172.18.0.3")
 ```
 
 Update the routing table of NNN for it to be able to access the AA network
@@ -38,19 +39,19 @@ Run two hosts on the AA network
 ./run_host.sh AA RRR
 # Prints:
 # 	Container ID (say, "AAA1")
-# 	IP Address   (say, "2.2.2.3")
+# 	IP Address   (say, "172.19.0.3")
 
 # Host A2
 ./run_host.sh AA RRR
 # Prints:
 # 	Container ID (say, "AAA2")
-# 	IP Address   (say, "2.2.2.4")
+# 	IP Address   (say, "172.19.0.4")
 ```
 
 In the NATted host, `ping` to confirm routing works
 ```
-docker exec -t NNN ping -c 2 2.2.2.3
-docker exec -t NNN ping -c 2 2.2.2.4
+docker exec -t NNN ping -c 4 172.19.0.3
+docker exec -t NNN ping -c 4 172.19.0.4
 ```
 
 Execute two `ncat` servers on A1 and A2
@@ -65,10 +66,10 @@ docker exec -it AAA2 ncat -vk -l 80 -c 'xargs -n1 echo Echo from AAA2: '
 Finally, for each `ncat` server, execute an `ncat` client that connects it, specifying a specific source port.
 ```
 # shell 3
-docker exec -it NNN ncat -v -p 45678 2.2.2.3 80
+docker exec -it NNN ncat -v -p 45678 172.19.0.3 80
 
 # shell 4
-docker exec -it NNN ncat -v -p 45678 2.2.2.4 80
+docker exec -it NNN ncat -v -p 45678 172.19.0.4 80
 ```
 
 Each `ncat` server shows the same result, meaning that NAT is done in endpoint-independent way.
@@ -77,11 +78,11 @@ Each `ncat` server shows the same result, meaning that NAT is done in endpoint-i
 Ncat: Version 7.70 ( https://nmap.org/ncat )
 Ncat: Listening on :::80
 Ncat: Listening on 0.0.0.0:80
-Ncat: Connection from 2.2.2.2.
-Ncat: Connection from 2.2.2.2:45678.
+Ncat: Connection from 172.19.0.2
+Ncat: Connection from 172.19.0.2:45678.
 ```
 
-> Why `iptables` chooses the same port number as the privat endpoint?
+> Why `iptables` chooses the same port number as the private endpoint?
 
 It seems that the NAT of `iptables` tests the identical one first by default.
 To confirm that it _really_ reuses the port mapping, not blindly choosing the identical number, I ran another NATted host,
@@ -91,10 +92,10 @@ followed the above steps again. The `iptables` _did_ reuse the port mapping: it 
 Ncat: Version 7.70 ( https://nmap.org/ncat )
 Ncat: Listening on :::80
 Ncat: Listening on 0.0.0.0:80
-Ncat: Connection from 2.2.2.2.
-Ncat: Connection from 2.2.2.2:45678.
-Ncat: Connection from 2.2.2.2.
-Ncat: Connection from 2.2.2.2:1024.
+Ncat: Connection from 172.19.0.2.
+Ncat: Connection from 172.19.0.2:45678.
+Ncat: Connection from 172.19.0.2
+Ncat: Connection from 172.19.0.2:1024.
 ```
 
 
